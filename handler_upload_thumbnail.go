@@ -2,11 +2,13 @@ package main
 
 import (
 	"database/sql"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
 	"github.com/google/uuid"
@@ -44,6 +46,7 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 	}
 
 	file, header, err := r.FormFile("thumbnail")
+
 	if err != nil {
 		respondWithError(w, http.StatusBadRequest, "Couldn't read file headers", err)
 		return
@@ -54,17 +57,6 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 	if contentType == "" {
 		contentType = "image/png"
 	}
-
-	imageData, err := io.ReadAll(file)
-	if err != nil {
-		respondWithError(w, http.StatusBadRequest, "Couldn't read media data", err)
-		return
-	}
-
-	data64 := base64.StdEncoding.EncodeToString(imageData)
-
-	//data:<media-type>;base64,<data>
-	dataURL := fmt.Sprintf("data:%s;base64,%s", contentType, data64)
 
 	video, err := cfg.db.GetVideo(videoID)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -81,17 +73,32 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	/*
-		thumb := thumbnail{
-			data:      imageData,
-			mediaType: contentType,
-		}
-	*/
+	// Save the bytes to a file at the path /assets/<videoID>.<file_extension>
+	var ext string
+	typeSlice := strings.Split(contentType, "/")
+	if len(typeSlice) > 1 {
+		ext = typeSlice[len(typeSlice)-1]
+	} else {
+		ext = "png"
+	}
 
-	//videoThumbnails[videoID] = thumb
+	filename := fmt.Sprintf("%s.%s", videoIDString, ext)
+	filePath := filepath.Join(cfg.assetsRoot, filename)
+	fileptr, err := os.Create(filePath)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't create thumbnail file", err)
+		return
+	}
+	defer fileptr.Close()
 
-	//url := fmt.Sprintf("http://localhost:%s/api/thumbnails/%s", cfg.port, videoID)
-	video.ThumbnailURL = &dataURL
+	_, err = io.Copy(fileptr, file)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't copy thumbnail file", err)
+		return
+	}
+
+	thumbnailURL := fmt.Sprintf("http://localhost:%s/assets/%s", cfg.port, filename)
+	video.ThumbnailURL = &thumbnailURL
 
 	err = cfg.db.UpdateVideo(video)
 	if err != nil {
