@@ -7,22 +7,27 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"mime"
 	"net/http"
 	"os"
-	"path/filepath"
-	"strings"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
 	"github.com/google/uuid"
 )
 
 func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request) {
+
+	// set a limit on the size of the upload
+	const maxMemory = 1 << 30
+
 	// get the id of the video the upload is for
 	videoIDString := r.PathValue("videoID")
 	videoID, err := uuid.Parse(videoIDString)
 	if err != nil {
-		respondWithError(w, http.StatusBadRequest, "Invalid ID", err)
+		respondWithError(w, http.StatusBadRequest, "Invalid video ID", err)
 		return
 	}
 
@@ -35,39 +40,6 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	userID, err := auth.ValidateJWT(token, cfg.jwtSecret)
 	if err != nil {
 		respondWithError(w, http.StatusUnauthorized, "Couldn't validate JWT", err)
-		return
-	}
-
-	// log that we are starting the upload
-	fmt.Println("uploading thumbnail for video", videoID, "by user", userID)
-
-	// set a limit on the size of the upload
-	const maxMemory = 10 << 20
-
-	// parse the request body
-	err = r.ParseMultipartForm(maxMemory)
-	if err != nil {
-		respondWithError(w, http.StatusBadRequest, "Couldn't parse request", err)
-		return
-	}
-
-	// store file / header in memory
-	file, header, err := r.FormFile("thumbnail")
-	if err != nil {
-		respondWithError(w, http.StatusBadRequest, "Couldn't read file/headers", err)
-		return
-	}
-	defer file.Close()
-
-	// determine content Type for extension
-	rawContentType := header.Header.Get("Content-Type")
-	contentType, _, err := mime.ParseMediaType(rawContentType)
-	if err != nil {
-		respondWithError(w, http.StatusBadRequest, "Couldn't read file content-type", err)
-		return
-	}
-	if contentType != "image/jpeg" && contentType != "image/png" {
-		respondWithError(w, http.StatusBadRequest, "Invalid content type", nil)
 		return
 	}
 
@@ -88,13 +60,60 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// determine file extension
-	var ext string
-	typeSlice := strings.Split(contentType, "/")
-	if len(typeSlice) > 1 {
-		ext = typeSlice[len(typeSlice)-1]
-	} else {
-		ext = "png"
+	// log that we are starting the upload
+	fmt.Println("uploading video", videoID, "by user", userID)
+
+	// parse the request body
+	err = r.ParseMultipartForm(maxMemory)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Couldn't parse request", err)
+		return
+	}
+
+	// store file / header in memory
+	file, header, err := r.FormFile("video")
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Couldn't read file/headers", err)
+		return
+	}
+	defer file.Close()
+
+	// determine content Type for extension
+	rawContentType := header.Header.Get("Content-Type")
+	contentType, _, err := mime.ParseMediaType(rawContentType)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Couldn't read file content-type", err)
+		return
+	}
+	if contentType != "video/mp4" {
+		respondWithError(w, http.StatusBadRequest, "Invalid content type", nil)
+		return
+	}
+
+	tempFile, err := os.CreateTemp("", "tubely-upload.mp4")
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't create video file", err)
+		return
+	}
+	defer os.Remove(tempFile.Name())
+	defer tempFile.Close()
+
+	io.Copy(tempFile, file)
+	tempFile.Seek(0, io.SeekStart)
+
+	// derive 'folder' from aspect ratio
+	aspectRatio, err := getVideoAspectRatio(tempFile.Name())
+	if err != nil {
+		log.Printf("Failed to obtain aspect ratio: %s", err.Error())
+	}
+	var folder string
+	switch aspectRatio {
+	case "16:9":
+		folder = "landscape/"
+	case "9:16":
+		folder = "portrait/"
+	default:
+		folder = "other/"
 	}
 
 	// create a randomized string for the file name to prevent caching
@@ -105,27 +124,22 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	randomString := base64.RawURLEncoding.EncodeToString(randomBytes)
+	key := folder + randomString + ".mp4"
 
-	// create the file
-	filename := fmt.Sprintf("%s.%s", randomString, ext)
-	filePath := filepath.Join(cfg.assetsRoot, filename)
-	fileptr, err := os.Create(filePath)
+	_, err = cfg.s3Client.PutObject(r.Context(), &s3.PutObjectInput{
+		Bucket:      aws.String(cfg.s3Bucket),
+		Key:         aws.String(key),
+		Body:        tempFile,
+		ContentType: &contentType,
+	})
 	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Couldn't create thumbnail file", err)
-		return
-	}
-	defer fileptr.Close()
-
-	// copy the data to the file
-	_, err = io.Copy(fileptr, file)
-	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Couldn't copy thumbnail file", err)
+		respondWithError(w, http.StatusInternalServerError, "Failed to upload to S3", err)
 		return
 	}
 
-	// update video record with the thumbnail url
-	thumbnailURL := fmt.Sprintf("http://localhost:%s/assets/%s", cfg.port, filename)
-	video.ThumbnailURL = &thumbnailURL
+	// update video record with the video url
+	videoURL := fmt.Sprintf("https://%s.s3.%s.amazonaws.com/%s", cfg.s3Bucket, cfg.s3Region, key)
+	video.VideoURL = &videoURL
 	err = cfg.db.UpdateVideo(video)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Couldn't update video", err)
