@@ -10,16 +10,20 @@ import (
 
 func getVideoAspectRatio(filePath string) (string, error) {
 
+	// define the command to run ffprobe
 	cmd := exec.Command("ffprobe", "-v", "error", "-print_format", "json", "-show_streams", filePath)
+
+	// declare a variable to store the results in memory
 	var out bytes.Buffer
 	cmd.Stdout = &out
 
+	// run the command
 	err := cmd.Run()
 	if err != nil {
 		return "", err
 	}
 
-	// Define struct to match ffprobe output
+	// define structs to match ffprobe output
 	type Stream struct {
 		Width  int    `json:"width"`
 		Height int    `json:"height"`
@@ -29,24 +33,30 @@ func getVideoAspectRatio(filePath string) (string, error) {
 		Streams []Stream `json:"streams"`
 	}
 
+	// prepare an empty slice of struct streams
 	var result FFProbeOutput
 
+	// unmarshal the json from the cmd output into the slice
 	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
 		return "", err
 	}
 
-	// Find the first video stream
+	// find the first video stream
 	for _, stream := range result.Streams {
 		if stream.Codec == "video" && stream.Width > 0 && stream.Height > 0 {
-			var aspect string
-			actualRatio := float64(stream.Width) / float64(stream.Height)
 
-			const epsilon = 0.01 // A small tolerance value
+			// calculate raw ratio
+			actualRatio := float64(stream.Width) / float64(stream.Height)
 
 			// Define target ratios
 			targetLandscapeRatio := 16.0 / 9.0
 			targetPortraitRatio := 9.0 / 16.0
 
+			// A small tolerance value
+			const epsilon = 0.01
+
+			// compare raw ratio to target ratios and return appropriate string
+			var aspect string
 			if math.Abs(actualRatio-targetLandscapeRatio) < epsilon {
 				aspect = "16:9"
 			} else if math.Abs(actualRatio-targetPortraitRatio) < epsilon {
@@ -58,6 +68,7 @@ func getVideoAspectRatio(filePath string) (string, error) {
 		}
 	}
 
+	// no video found, return error msg
 	return "", fmt.Errorf("no video stream found")
 
 }
