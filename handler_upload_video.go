@@ -54,9 +54,9 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// check if user is authroized
+	// check if user is authorized
 	if video.UserID != userID {
-		respondWithError(w, http.StatusUnauthorized, "Unauthorized", nil)
+		respondWithError(w, http.StatusForbidden, "Forbidden", nil)
 		return
 	}
 
@@ -71,12 +71,12 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	}
 
 	// store file / header in memory
-	file, header, err := r.FormFile("video")
+	multipartFile, header, err := r.FormFile("video")
 	if err != nil {
 		respondWithError(w, http.StatusBadRequest, "Couldn't read file/headers", err)
 		return
 	}
-	defer file.Close()
+	defer multipartFile.Close()
 
 	// determine content Type for extension
 	rawContentType := header.Header.Get("Content-Type")
@@ -90,6 +90,7 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// create temporary file
 	tempFile, err := os.CreateTemp("", "tubely-upload.mp4")
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Couldn't create video file", err)
@@ -98,7 +99,8 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	defer os.Remove(tempFile.Name())
 	defer tempFile.Close()
 
-	io.Copy(tempFile, file)
+	// copy from multipart file to temporary file
+	io.Copy(tempFile, multipartFile)
 	tempFile.Seek(0, io.SeekStart)
 
 	// derive 'folder' from aspect ratio
@@ -126,10 +128,27 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	randomString := base64.RawURLEncoding.EncodeToString(randomBytes)
 	key := folder + randomString + ".mp4"
 
+	// process video for fast start
+	processedPath, err := processVideoForFastStart(tempFile.Name())
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't process video for fast start", err)
+		return
+	}
+
+	// open processed video
+	uploadFile, err := os.Open(processedPath)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't open processed file for upload", err)
+		return
+	}
+	defer uploadFile.Close()
+	defer os.Remove(processedPath)
+
+	// put video in the bucket
 	_, err = cfg.s3Client.PutObject(r.Context(), &s3.PutObjectInput{
 		Bucket:      aws.String(cfg.s3Bucket),
 		Key:         aws.String(key),
-		Body:        tempFile,
+		Body:        uploadFile,
 		ContentType: &contentType,
 	})
 	if err != nil {
@@ -146,7 +165,7 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// send a response cuz we done
+	// success response
 	respondWithJSON(w, http.StatusOK, video)
 
 }
