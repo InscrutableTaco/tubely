@@ -12,7 +12,7 @@ func generatePresignedURL(s3Client *s3.Client, bucket, key string, expireTime ti
 	// Use the SDK to create a s3.PresignClient with s3.NewPresignClient
 	presignClnt := s3.NewPresignClient(s3Client)
 
-	// create a get object input variable to use as the input in creating the http request
+	// struct for passing the bucket/key into the request
 	objInpt := s3.GetObjectInput{
 		Bucket: &bucket,
 		Key:    &key,

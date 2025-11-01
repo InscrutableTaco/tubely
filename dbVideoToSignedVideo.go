@@ -3,7 +3,6 @@ package main
 import (
 	"errors"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
@@ -12,15 +11,13 @@ import (
 
 func (cfg *apiConfig) dbVideoToSignedVideo(video database.Video) (database.Video, error) {
 
-	if video.VideoURL == nil {
-		return database.Video{}, errors.New("video url empty")
-	}
-
+	// error if url absent
 	if video.VideoURL == nil || *video.VideoURL == "" {
 		return database.Video{}, errors.New("video url empty")
 	}
+
+	// parse the url
 	raw := strings.TrimSpace(*video.VideoURL)
-	log.Printf("Signing raw video_url: %q", raw)
 	parts := strings.Split(raw, ",")
 	if len(parts) != 2 {
 		return database.Video{}, fmt.Errorf("unable to parse video url for signing: %q", raw)
@@ -31,13 +28,14 @@ func (cfg *apiConfig) dbVideoToSignedVideo(video database.Video) (database.Video
 		return database.Video{}, fmt.Errorf("unable to parse video url for signing: bucket=%q key=%q", bucket, key)
 	}
 
+	// create a presigned url
 	presignedURL, err := generatePresignedURL(cfg.s3Client, bucket, key, time.Minute*2)
 	if err != nil {
 		return database.Video{}, fmt.Errorf("failed to generate presigned url: %s", err)
 	}
 
+	// update and return video (video in db isn't modified)
 	video.VideoURL = &presignedURL
-
 	return video, nil
 
 }

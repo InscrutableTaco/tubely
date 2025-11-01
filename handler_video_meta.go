@@ -84,6 +84,7 @@ func (cfg *apiConfig) handlerVideoMetaDelete(w http.ResponseWriter, r *http.Requ
 
 func (cfg *apiConfig) handlerVideoGet(w http.ResponseWriter, r *http.Request) {
 
+	// read video id from request
 	videoIDString := r.PathValue("videoID")
 	videoID, err := uuid.Parse(videoIDString)
 	if err != nil {
@@ -91,29 +92,32 @@ func (cfg *apiConfig) handlerVideoGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// retrieve video from db
 	video, err := cfg.db.GetVideo(videoID)
 	if err != nil {
 		respondWithError(w, http.StatusNotFound, "Couldn't get video", err)
 		return
 	}
-
 	if video.VideoURL == nil || !strings.Contains(*video.VideoURL, ",") {
 		// Draft or old-format URL: return as-is so the page can open
 		respondWithJSON(w, http.StatusOK, video)
 		return
 	}
 
+	// create a signed url version of the video
 	video, err = cfg.dbVideoToSignedVideo(video)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Error creating signed url", err)
 		return
 	}
 
+	// respond with the signed video
 	respondWithJSON(w, http.StatusOK, video)
 }
 
 func (cfg *apiConfig) handlerVideosRetrieve(w http.ResponseWriter, r *http.Request) {
 
+	// authenticate user
 	token, err := auth.GetBearerToken(r.Header)
 	if err != nil {
 		respondWithError(w, http.StatusUnauthorized, "Couldn't find JWT", err)
@@ -125,12 +129,14 @@ func (cfg *apiConfig) handlerVideosRetrieve(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// get the user's videos
 	videos, err := cfg.db.GetVideos(userID)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Couldn't retrieve videos", err)
 		return
 	}
 
+	// sign them
 	for i, v := range videos {
 		if v.VideoURL == nil || !strings.Contains(*v.VideoURL, ",") {
 			continue
@@ -141,6 +147,7 @@ func (cfg *apiConfig) handlerVideosRetrieve(w http.ResponseWriter, r *http.Reque
 		}
 	}
 
+	// respond with videos
 	respondWithJSON(w, http.StatusOK, videos)
 
 }
